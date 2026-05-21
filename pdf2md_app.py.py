@@ -68,7 +68,7 @@ h1 {
     font-size: 0.7rem !important;
 }
 
-/* Botón primario (Convertir) */
+/* Primary button (Convert) */
 div[data-testid="stButton"] > button[kind="primary"] {
     background: #c8f09a !important;
     color: #0d0d0d !important;
@@ -83,7 +83,7 @@ div[data-testid="stButton"] > button[kind="primary"] {
 }
 div[data-testid="stButton"] > button[kind="primary"]:hover { background: #d8f5b0 !important; }
 
-/* Botón secundario (Limpiar) */
+/* Secondary button (Clear) */
 div[data-testid="stButton"] > button[kind="secondary"] {
     background: transparent !important;
     color: #555 !important;
@@ -193,12 +193,13 @@ def do_clear():
 # ── Header ────────────────────────────────────────────────────────────────────
 st.markdown("# pdf → markdown")
 st.markdown('<p class="subtitle">TOKEN-EFFICIENT CONVERSION FOR LLM CONSUMPTION</p>', unsafe_allow_html=True)
+
 st.divider()
 
 
 # ── Upload ────────────────────────────────────────────────────────────────────
 uploaded_files = st.file_uploader(
-    "Sube uno o varios PDFs",
+    "Upload one or more PDFs",
     type=["pdf"],
     accept_multiple_files=True,
     label_visibility="collapsed",
@@ -211,14 +212,14 @@ col_convert, col_clear = st.columns([3, 1])
 
 with col_convert:
     convert_clicked = st.button(
-        "⚡ Convertir",
+        "⚡ Convert",
         type="primary",
         disabled=not uploaded_files,
     )
 
 with col_clear:
     st.button(
-        "🗑 Limpiar",
+        "🗑 Clear",
         type="secondary",
         on_click=do_clear,
         disabled=not uploaded_files and st.session_state.results is None,
@@ -232,7 +233,7 @@ if convert_clicked and uploaded_files:
     total_md_kb  = 0
     total_tokens = 0
 
-    progress = st.progress(0, text="Convirtiendo archivos…")
+    progress = st.progress(0, text="Converting files…")
 
     for i, f in enumerate(uploaded_files):
         pdf_bytes = f.read()
@@ -265,7 +266,7 @@ if convert_clicked and uploaded_files:
             })
 
         progress.progress((i + 1) / len(uploaded_files),
-                          text=f"Convirtiendo {i+1}/{len(uploaded_files)}…")
+                          text=f"Converting {i+1}/{len(uploaded_files)}…")
 
     progress.empty()
     st.session_state.results = {
@@ -290,7 +291,7 @@ if st.session_state.results:
             st.markdown(
                 f'<div class="file-row">'
                 f'<span class="file-name">📄 {r["orig_name"]}</span>'
-                f'<span><span class="file-ok">✓ convertido</span>'
+                f'<span><span class="file-ok">✓ converted</span>'
                 f'<span class="file-kb">{r["pdf_kb"]:.1f} KB → {r["md_kb"]:.1f} KB'
                 f' · ~{r["tokens"]:,} tokens</span></span>'
                 f'</div>',
@@ -311,14 +312,14 @@ if st.session_state.results:
         st.divider()
         c1, c2, c3, c4 = st.columns(4)
         with c1:
-            st.metric("Archivos", f"{len(ok_list)}/{len(results)}")
+            st.metric("Files", f"{len(ok_list)}/{len(results)}")
         with c2:
-            st.metric("PDF total", f"{data['total_pdf_kb']:.1f} KB")
+            st.metric("Total PDF", f"{data['total_pdf_kb']:.1f} KB")
         with c3:
-            st.metric("Reducción", f"{reduction:.0f}%",
+            st.metric("Reduction", f"{reduction:.0f}%",
                       delta=f"-{data['total_pdf_kb'] - data['total_md_kb']:.1f} KB")
         with c4:
-            st.metric("~Tokens total", f"{data['total_tokens']:,}")
+            st.metric("~Total tokens", f"{data['total_tokens']:,}")
 
         st.divider()
 
@@ -326,29 +327,29 @@ if st.session_state.results:
         if len(ok_list) == 1:
             r = ok_list[0]
             st.download_button(
-                label="⬇ Descargar .md",
+                label="⬇ Download .md",
                 data=r["md_text"].encode("utf-8"),
                 file_name=r["md_name"],
                 mime="text/markdown",
             )
-            with st.expander("Vista previa", expanded=True):
+            with st.expander("Preview", expanded=True):
                 preview = r["md_text"][:3000] + ("\n\n…" if len(r["md_text"]) > 3000 else "")
                 st.markdown(f'<div class="preview-box">{preview}</div>',
                             unsafe_allow_html=True)
         else:
             zip_bytes = build_zip([(r["md_name"], r["md_text"]) for r in ok_list])
             st.download_button(
-                label=f"⬇ Descargar todos ({len(ok_list)} archivos) como .zip",
+                label=f"⬇ Download all ({len(ok_list)} files) as .zip",
                 data=zip_bytes,
                 file_name="markdown_files.zip",
                 mime="application/zip",
             )
             for r in ok_list:
-                with st.expander(f"Vista previa — {r['md_name']}"):
+                with st.expander(f"Preview — {r['md_name']}"):
                     preview = r["md_text"][:2000] + ("\n\n…" if len(r["md_text"]) > 2000 else "")
                     st.markdown(f'<div class="preview-box">{preview}</div>',
                                 unsafe_allow_html=True)
 
 elif not uploaded_files:
     st.markdown("")
-    st.info("Arrastra uno o varios PDFs arriba, o haz clic para seleccionarlos.", icon="📎")
+    st.info("Drag and drop PDFs above, or click to browse.", icon="📎")
