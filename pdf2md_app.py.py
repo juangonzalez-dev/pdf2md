@@ -501,27 +501,32 @@ if st.session_state.results:
             with st.expander(f"{icon} {md_name}", expanded=(len(ok_list) == 1)):
 
                 # ── 1. Inline editor ─────────────────────────────────────────
-                # st.text_area keeps its own state via key; we read the current
-                # value back through session_state so the download button picks
-                # up any edits made by the user.
-                edited = st.text_area(
+                # Initialise the editor key in session_state BEFORE rendering
+                # the widget so the first render uses the original text and
+                # subsequent reruns preserve whatever the user typed.
+                editor_key = f"editor_{md_name}"
+                if editor_key not in st.session_state:
+                    st.session_state[editor_key] = r["md_text"]
+
+                st.text_area(
                     "Edit Markdown before downloading",
-                    value=st.session_state.edited_md.get(md_name, r["md_text"]),
                     height=320,
-                    key=f"editor_{md_name}",
+                    key=editor_key,
                     label_visibility="collapsed",
                 )
-                # Persist edits back to session_state
-                st.session_state.edited_md[md_name] = edited
 
-                char_delta = len(edited) - len(r["md_text"])
+                # Read the live value straight from session_state — this is
+                # always current even during the same rerun that the user typed.
+                current_text = st.session_state[editor_key]
+
+                char_delta = len(current_text) - len(r["md_text"])
                 delta_str  = (f"+{char_delta}" if char_delta >= 0 else str(char_delta)) + " chars"
-                st.caption(f"~{estimate_tokens(edited):,} tokens · {delta_str} vs original")
+                st.caption(f"~{estimate_tokens(current_text):,} tokens · {delta_str} vs original")
 
                 # ── 2. Download (uses edited text) ───────────────────────────
                 st.download_button(
                     label="⬇ Download .md",
-                    data=edited.encode("utf-8"),
+                    data=current_text.encode("utf-8"),
                     file_name=md_name,
                     mime="text/markdown",
                     key=f"dl_{md_name}",
@@ -531,7 +536,7 @@ if st.session_state.results:
         if len(ok_list) > 1:
             st.divider()
             edited_pairs = [
-                (r["md_name"], st.session_state.edited_md.get(r["md_name"], r["md_text"]))
+                (r["md_name"], st.session_state.get(f"editor_{r['md_name']}", r["md_text"]))
                 for r in ok_list
             ]
             zip_bytes = build_zip(edited_pairs)
