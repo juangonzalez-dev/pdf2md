@@ -1,2 +1,4 @@
 streamlit
 pymupdf4llm
+mammoth
+python-pptx
