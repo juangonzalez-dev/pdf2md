@@ -1,14 +1,17 @@
 import streamlit as st
 import pymupdf4llm
+import mammoth
 import tempfile
 import os
 import zipfile
 import io
 from pathlib import Path
+from pptx import Presentation
+from pptx.util import Pt
 
 # ── Page config ───────────────────────────────────────────────────────────────
 st.set_page_config(
-    page_title="PDF → Markdown",
+    page_title="Docs → Markdown",
     page_icon="📄",
     layout="centered",
 )
@@ -99,7 +102,7 @@ div[data-testid="stButton"] > button[kind="secondary"]:hover {
     color: #ccc !important;
 }
 
-/* Botón de descarga */
+/* Download button */
 [data-testid="stDownloadButton"] > button {
     background: #c8f09a !important;
     color: #0d0d0d !important;
@@ -146,6 +149,11 @@ div[data-testid="stButton"] > button[kind="secondary"]:hover {
     word-break: break-word;
 }
 
+/* Badge de tipo de archivo */
+.badge-pdf  { color: #f0b49a; }
+.badge-docx { color: #9ab8f0; }
+.badge-pptx { color: #c49af0; }
+
 [data-testid="stExpander"] {
     background: #111 !important;
     border: 1px solid #1e1e1e !important;
@@ -164,9 +172,10 @@ if "results" not in st.session_state:
     st.session_state.results = None
 
 
-# ── Helpers ───────────────────────────────────────────────────────────────────
+# ── Converters ────────────────────────────────────────────────────────────────
 def estimate_tokens(text: str) -> int:
     return len(text) // 4
+
 
 def pdf_bytes_to_md(pdf_bytes: bytes) -> str:
     with tempfile.NamedTemporaryFile(suffix=".pdf", delete=False) as tmp:
@@ -178,6 +187,155 @@ def pdf_bytes_to_md(pdf_bytes: bytes) -> str:
         os.unlink(tmp_path)
     return md
 
+
+def docx_bytes_to_md(docx_bytes: bytes) -> str:
+    """
+    Converts a DOCX to Markdown using mammoth.
+    Preserves headings, lists, bold, italic, and tables.
+    Images are stripped (not useful for LLM text consumption).
+    """
+    buf = io.BytesIO(docx_bytes)
+
+    # Custom style map: map Word styles to Markdown-friendly HTML
+    style_map = """
+        p[style-name='Heading 1'] => h1:fresh
+        p[style-name='Heading 2'] => h2:fresh
+        p[style-name='Heading 3'] => h3:fresh
+        p[style-name='Heading 4'] => h4:fresh
+        p[style-name='Heading 5'] => h5:fresh
+        p[style-name='Heading 6'] => h6:fresh
+        r[style-name='Strong']    => strong
+        r[style-name='Emphasis']  => em
+    """
+
+    result = mammoth.convert_to_markdown(buf, style_map=style_map)
+    md = result.value
+
+    # Clean up excessive blank lines
+    import re
+    md = re.sub(r'\n{3,}', '\n\n', md).strip()
+    return md
+
+
+def pptx_bytes_to_md(pptx_bytes: bytes) -> str:
+    """
+    Converts a PPTX to Markdown slide by slide.
+    Extracts: slide title, body text, speaker notes, and table content.
+    Layout: each slide becomes a ## section with its content underneath.
+    """
+    buf = io.BytesIO(pptx_bytes)
+    prs = Presentation(buf)
+
+    slides_md = []
+
+    for slide_num, slide in enumerate(prs.slides, start=1):
+        lines = []
+
+        title_text = ""
+        body_parts = []
+        table_parts = []
+        notes_text = ""
+
+        # ── Extract shapes ────────────────────────────────────────────────────
+        for shape in slide.shapes:
+
+            # Tables
+            if shape.has_table:
+                table = shape.table
+                rows_md = []
+                for r_idx, row in enumerate(table.rows):
+                    cells = [cell.text.strip().replace("\n", " ") for cell in row.cells]
+                    rows_md.append("| " + " | ".join(cells) + " |")
+                    if r_idx == 0:
+                        rows_md.append("|" + "|".join(["---"] * len(cells)) + "|")
+                table_parts.append("\n".join(rows_md))
+                continue
+
+            # Text frames
+            if not shape.has_text_frame:
+                continue
+
+            # Detect title placeholder (placeholder type 1 = CENTER_TITLE, 13 = TITLE)
+            is_title = (
+                hasattr(shape, "placeholder_format")
+                and shape.placeholder_format is not None
+                and shape.placeholder_format.idx in (0, 1)
+            )
+
+            frame_lines = []
+            for para in shape.text_frame.paragraphs:
+                para_text = para.text.strip()
+                if not para_text:
+                    continue
+
+                # Detect bullet level for indentation
+                level = para.level if para.level is not None else 0
+                indent = "  " * level
+
+                # Detect if paragraph runs are all bold → treat as sub-heading
+                all_bold = all(
+                    (run.font.bold is True)
+                    for run in para.runs if run.text.strip()
+                ) and para.runs
+
+                if all_bold and level == 0:
+                    frame_lines.append(f"**{para_text}**")
+                else:
+                    frame_lines.append(f"{indent}- {para_text}")
+
+            if is_title:
+                title_text = shape.text_frame.text.strip()
+            else:
+                body_parts.extend(frame_lines)
+
+        # ── Speaker notes ─────────────────────────────────────────────────────
+        if slide.has_notes_slide:
+            notes_tf = slide.notes_slide.notes_text_frame
+            raw_notes = notes_tf.text.strip() if notes_tf else ""
+            # Skip the auto-generated slide number note
+            if raw_notes and raw_notes != str(slide_num):
+                notes_text = raw_notes
+
+        # ── Assemble slide Markdown ───────────────────────────────────────────
+        heading = f"## Slide {slide_num}" + (f": {title_text}" if title_text else "")
+        lines.append(heading)
+
+        if body_parts:
+            lines.append("")
+            lines.extend(body_parts)
+
+        if table_parts:
+            lines.append("")
+            for t in table_parts:
+                lines.append(t)
+
+        if notes_text:
+            lines.append("")
+            lines.append(f"> **Notes:** {notes_text}")
+
+        slides_md.append("\n".join(lines))
+
+    return "\n\n---\n\n".join(slides_md)
+
+
+# ── File type dispatcher ──────────────────────────────────────────────────────
+FILE_ICONS = {
+    "pdf":  ("📄", "badge-pdf"),
+    "docx": ("📝", "badge-docx"),
+    "pptx": ("📊", "badge-pptx"),
+}
+
+def convert_file(file_bytes: bytes, extension: str) -> str:
+    if extension == "pdf":
+        return pdf_bytes_to_md(file_bytes)
+    elif extension == "docx":
+        return docx_bytes_to_md(file_bytes)
+    elif extension == "pptx":
+        return pptx_bytes_to_md(file_bytes)
+    else:
+        raise ValueError(f"Unsupported format: {extension}")
+
+
 def build_zip(results: list) -> bytes:
     buf = io.BytesIO()
     with zipfile.ZipFile(buf, "w", zipfile.ZIP_DEFLATED) as zf:
@@ -185,28 +343,31 @@ def build_zip(results: list) -> bytes:
             zf.writestr(name, md_text.encode("utf-8"))
     return buf.getvalue()
 
+
 def do_clear():
-    st.session_state.uploader_key += 1   # fuerza re-render del uploader
+    st.session_state.uploader_key += 1
     st.session_state.results = None
 
 
 # ── Header ────────────────────────────────────────────────────────────────────
-st.markdown("# pdf → markdown")
-st.markdown('<p class="subtitle">TOKEN-EFFICIENT CONVERSION FOR LLM CONSUMPTION</p>', unsafe_allow_html=True)
+st.markdown("# docs → markdown")
+st.markdown(
+    '<p class="subtitle">TOKEN-EFFICIENT CONVERSION FOR LLM CONSUMPTION · PDF · DOCX · PPTX</p>',
+    unsafe_allow_html=True,
+)
 
 st.divider()
 
-
 # ── Upload ────────────────────────────────────────────────────────────────────
 uploaded_files = st.file_uploader(
-    "Upload one or more PDFs",
-    type=["pdf"],
+    "Upload PDFs, Word documents, or PowerPoint presentations",
+    type=["pdf", "docx", "pptx"],
     accept_multiple_files=True,
     label_visibility="collapsed",
     key=f"uploader_{st.session_state.uploader_key}",
 )
 
-# ── Botones ───────────────────────────────────────────────────────────────────
+# ── Buttons ───────────────────────────────────────────────────────────────────
 st.markdown("")
 col_convert, col_clear = st.columns([3, 1])
 
@@ -226,7 +387,7 @@ with col_clear:
     )
 
 
-# ── Conversión ────────────────────────────────────────────────────────────────
+# ── Conversion ────────────────────────────────────────────────────────────────
 if convert_clicked and uploaded_files:
     results      = []
     total_pdf_kb = 0
@@ -236,12 +397,13 @@ if convert_clicked and uploaded_files:
     progress = st.progress(0, text="Converting files…")
 
     for i, f in enumerate(uploaded_files):
-        pdf_bytes = f.read()
-        pdf_kb    = len(pdf_bytes) / 1024
-        total_pdf_kb += pdf_kb
+        file_bytes = f.read()
+        file_kb    = len(file_bytes) / 1024
+        total_pdf_kb += file_kb
+        ext = Path(f.name).suffix.lstrip(".").lower()
 
         try:
-            md_text = pdf_bytes_to_md(pdf_bytes)
+            md_text = convert_file(file_bytes, ext)
             md_kb   = len(md_text.encode("utf-8")) / 1024
             tokens  = estimate_tokens(md_text)
             total_md_kb  += md_kb
@@ -250,11 +412,12 @@ if convert_clicked and uploaded_files:
             results.append({
                 "md_name":   f"{stem}.md",
                 "md_text":   md_text,
-                "pdf_kb":    pdf_kb,
+                "file_kb":   file_kb,
                 "md_kb":     md_kb,
                 "tokens":    tokens,
                 "ok":        True,
                 "orig_name": f.name,
+                "ext":       ext,
             })
         except Exception as e:
             results.append({
@@ -262,22 +425,25 @@ if convert_clicked and uploaded_files:
                 "ok":        False,
                 "error":     str(e),
                 "orig_name": f.name,
-                "pdf_kb":    pdf_kb,
+                "file_kb":   file_kb,
+                "ext":       ext,
             })
 
-        progress.progress((i + 1) / len(uploaded_files),
-                          text=f"Converting {i+1}/{len(uploaded_files)}…")
+        progress.progress(
+            (i + 1) / len(uploaded_files),
+            text=f"Converting {i+1}/{len(uploaded_files)}…",
+        )
 
     progress.empty()
     st.session_state.results = {
-        "files":         results,
-        "total_pdf_kb":  total_pdf_kb,
-        "total_md_kb":   total_md_kb,
-        "total_tokens":  total_tokens,
+        "files":        results,
+        "total_file_kb": total_pdf_kb,
+        "total_md_kb":  total_md_kb,
+        "total_tokens": total_tokens,
     }
 
 
-# ── Resultados ────────────────────────────────────────────────────────────────
+# ── Results ───────────────────────────────────────────────────────────────────
 if st.session_state.results:
     data    = st.session_state.results
     results = data["files"]
@@ -285,45 +451,54 @@ if st.session_state.results:
 
     st.divider()
 
-    # Filas de estado
+    # Status rows
     for r in results:
+        icon, badge_class = FILE_ICONS.get(r["ext"], ("📄", "file-ok"))
         if r["ok"]:
             st.markdown(
                 f'<div class="file-row">'
-                f'<span class="file-name">📄 {r["orig_name"]}</span>'
-                f'<span><span class="file-ok">✓ converted</span>'
-                f'<span class="file-kb">{r["pdf_kb"]:.1f} KB → {r["md_kb"]:.1f} KB'
-                f' · ~{r["tokens"]:,} tokens</span></span>'
+                f'<span class="file-name">'
+                f'<span class="{badge_class}">{icon}</span> {r["orig_name"]}'
+                f'</span>'
+                f'<span>'
+                f'<span class="file-ok">✓ converted</span>'
+                f'<span class="file-kb">'
+                f'{r["file_kb"]:.1f} KB → {r["md_kb"]:.1f} KB'
+                f' · ~{r["tokens"]:,} tokens'
+                f'</span>'
+                f'</span>'
                 f'</div>',
                 unsafe_allow_html=True,
             )
         else:
             st.markdown(
                 f'<div class="file-row">'
-                f'<span class="file-name">📄 {r["orig_name"]}</span>'
+                f'<span class="file-name">'
+                f'<span class="{badge_class}">{icon}</span> {r["orig_name"]}'
+                f'</span>'
                 f'<span class="file-err">✗ {r["error"]}</span>'
                 f'</div>',
                 unsafe_allow_html=True,
             )
 
-    # Métricas totales
+    # Summary metrics
     if ok_list:
-        reduction = (1 - data["total_md_kb"] / data["total_pdf_kb"]) * 100
+        reduction = (1 - data["total_md_kb"] / data["total_file_kb"]) * 100
         st.divider()
         c1, c2, c3, c4 = st.columns(4)
         with c1:
             st.metric("Files", f"{len(ok_list)}/{len(results)}")
         with c2:
-            st.metric("Total PDF", f"{data['total_pdf_kb']:.1f} KB")
+            st.metric("Total size", f"{data['total_file_kb']:.1f} KB")
         with c3:
             st.metric("Reduction", f"{reduction:.0f}%",
-                      delta=f"-{data['total_pdf_kb'] - data['total_md_kb']:.1f} KB")
+                      delta=f"-{data['total_file_kb'] - data['total_md_kb']:.1f} KB")
         with c4:
             st.metric("~Total tokens", f"{data['total_tokens']:,}")
 
         st.divider()
 
-        # Descarga
+        # Download
         if len(ok_list) == 1:
             r = ok_list[0]
             st.download_button(
@@ -334,8 +509,10 @@ if st.session_state.results:
             )
             with st.expander("Preview", expanded=True):
                 preview = r["md_text"][:3000] + ("\n\n…" if len(r["md_text"]) > 3000 else "")
-                st.markdown(f'<div class="preview-box">{preview}</div>',
-                            unsafe_allow_html=True)
+                st.markdown(
+                    f'<div class="preview-box">{preview}</div>',
+                    unsafe_allow_html=True,
+                )
         else:
             zip_bytes = build_zip([(r["md_name"], r["md_text"]) for r in ok_list])
             st.download_button(
@@ -347,9 +524,11 @@ if st.session_state.results:
             for r in ok_list:
                 with st.expander(f"Preview — {r['md_name']}"):
                     preview = r["md_text"][:2000] + ("\n\n…" if len(r["md_text"]) > 2000 else "")
-                    st.markdown(f'<div class="preview-box">{preview}</div>',
-                                unsafe_allow_html=True)
+                    st.markdown(
+                        f'<div class="preview-box">{preview}</div>',
+                        unsafe_allow_html=True,
+                    )
 
 elif not uploaded_files:
     st.markdown("")
-    st.info("Drag and drop PDFs above, or click to browse.", icon="📎")
+    st.info("Drag and drop PDFs, Word docs, or PowerPoint files above, or click to browse.", icon="📎")
