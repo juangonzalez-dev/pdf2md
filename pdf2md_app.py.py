@@ -500,10 +500,7 @@ if st.session_state.results:
 
             with st.expander(f"{icon} {md_name}", expanded=(len(ok_list) == 1)):
 
-                # ── 1. Inline editor ─────────────────────────────────────────
-                # Initialise the editor key in session_state BEFORE rendering
-                # the widget so the first render uses the original text and
-                # subsequent reruns preserve whatever the user typed.
+                # ── Inline editor ────────────────────────────────────────────
                 editor_key = f"editor_{md_name}"
                 if editor_key not in st.session_state:
                     st.session_state[editor_key] = r["md_text"]
@@ -515,18 +512,10 @@ if st.session_state.results:
                     label_visibility="collapsed",
                 )
 
-                # Read the live value straight from session_state — this is
-                # always current even during the same rerun that the user typed.
-                current_text = st.session_state[editor_key]
-
-                char_delta = len(current_text) - len(r["md_text"])
-                delta_str  = (f"+{char_delta}" if char_delta >= 0 else str(char_delta)) + " chars"
-                st.caption(f"~{estimate_tokens(current_text):,} tokens · {delta_str} vs original")
-
-                # ── 2. Download (uses edited text) ───────────────────────────
+                # ── Download (uses edited text) ──────────────────────────────
                 st.download_button(
                     label="⬇ Download .md",
-                    data=current_text.encode("utf-8"),
+                    data=st.session_state[editor_key].encode("utf-8"),
                     file_name=md_name,
                     mime="text/markdown",
                     key=f"dl_{md_name}",
